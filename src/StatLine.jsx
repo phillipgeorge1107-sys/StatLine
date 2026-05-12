@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { Lock, Unlock, Calendar, Share2 } from 'lucide-react';
 
 /* ─────────────────────────────────────────────────────────────────────────
@@ -1856,20 +1856,57 @@ async function shareOrCopy(text) {
 }
 
 const MAX_GUESSES = 3;
-const C = {
-  ink: '#1a1a1a', classified: '#9b1c1c', manila: '#e8dcb8',
-  manilaDeep: '#d6c89a', highlight: '#fff7d6', green: '#1a4d2e'
+// Two themes — picked at render time based on active mode.
+const BULLS_C = {
+  // Throwback 90s Bulls: pure black + Bulls red + parchment cream + championship gold
+  ink: '#0a0a0a', classified: '#CE1141', manila: '#f0e8d6',
+  manilaDeep: '#ddd1b3', highlight: '#ffe8e3', green: '#b8862a'
+};
+const SPURS_C = {
+  // Late 90s Spurs "Fiesta": black + teal + cream + hot pink
+  ink: '#0a0a0a', classified: '#008C95', manila: '#f0e8d6',
+  manilaDeep: '#ddd1b3', highlight: '#ffe5f1', green: '#E50087'
 };
 
 export default function StatLine() {
   // Mode + per-mode game state. Each tab runs its own independent puzzle.
   const [mode, setMode] = useState('all');
-  const [games, setGames] = useState(() => ({
-    all:   { player: getDailyPlayer('all'),   guesses: [], revealed: 0, state: 'playing' },
-    bulls: { player: getDailyPlayer('bulls'), guesses: [], revealed: 0, state: 'playing' }
-  }));
+  const [games, setGames] = useState(() => {
+    // Lazy initializer: try to restore today's progress from localStorage.
+    // Stored under "statline:all" / "statline:bulls" with today's date stamp.
+    // If the saved date doesn't match today, start fresh (new day's puzzle).
+    const today = getDailySeed();
+    const loadMode = (m) => {
+      const fresh = { player: getDailyPlayer(m), guesses: [], revealed: 0, state: 'playing' };
+      if (typeof window === 'undefined') return fresh;
+      try {
+        const saved = JSON.parse(localStorage.getItem('statline:' + m) || 'null');
+        if (saved && saved.date === today && Array.isArray(saved.guesses)) {
+          return { ...fresh, guesses: saved.guesses, revealed: saved.revealed || 0, state: saved.state || 'playing' };
+        }
+      } catch { /* ignore corrupted save */ }
+      return fresh;
+    };
+    return { all: loadMode('all'), bulls: loadMode('bulls') };
+  });
   const updateCurrent = (updates) =>
     setGames(g => ({ ...g, [mode]: { ...g[mode], ...updates } }));
+
+  // Persist progress on every change so closing the tab mid-guess is safe.
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    const today = getDailySeed();
+    try {
+      for (const m of ['all', 'bulls']) {
+        localStorage.setItem('statline:' + m, JSON.stringify({
+          date: today,
+          guesses: games[m].guesses,
+          revealed: games[m].revealed,
+          state: games[m].state
+        }));
+      }
+    } catch { /* private mode / quota — fail silently */ }
+  }, [games]);
 
   // Pull active mode's puzzle into the names the rest of the JSX expects.
   const { player, guesses, revealed, state } = games[mode];
@@ -1879,6 +1916,7 @@ export default function StatLine() {
   const [shareToast, setShareToast] = useState('');
   const [showSuggestions, setShowSuggestions] = useState(false);
   const [highlightedIdx, setHighlightedIdx] = useState(-1);
+  const [showBullBurst, setShowBullBurst] = useState(false);
 
   const switchMode = (m) => {
     if (m === mode) return;
@@ -1889,12 +1927,23 @@ export default function StatLine() {
     setShareToast('');
   };
 
+  // Active theme palette + helper that turns hex+alpha into rgba(...)
+  const C = mode === 'bulls' ? BULLS_C : SPURS_C;
+  const rgba = (hex, a) => {
+    const n = parseInt(hex.slice(1), 16);
+    return `rgba(${(n>>16)&255},${(n>>8)&255},${n&255},${a})`;
+  };
+
   const submit = () => {
     if (state !== 'playing') return;
     const text = input.trim();
     if (!text) return;
     if (matchesPlayer(text, player)) {
       updateCurrent({ guesses: [...guesses, { text, correct: true }], state: 'won' });
+      if (mode === 'bulls') {
+        setShowBullBurst(true);
+        setTimeout(() => setShowBullBurst(false), 2600);
+      }
     } else {
       const newGuesses = [...guesses, { text, correct: false }];
       updateCurrent({
@@ -1956,9 +2005,10 @@ export default function StatLine() {
         }
         .sl-folder {
           background-color: ${C.manila};
-          box-shadow: 0 1px 0 rgba(0,0,0,0.05) inset, 0 -2px 0 ${C.manilaDeep} inset,
-                      0 6px 24px rgba(0,0,0,0.18), 0 1px 4px rgba(0,0,0,0.12);
-          border: 1px solid ${C.manilaDeep};
+          box-shadow: 0 1px 0 rgba(0,0,0,0.05) inset, 0 -3px 0 ${C.classified} inset,
+                      0 6px 24px rgba(0,0,0,0.22), 0 1px 4px rgba(0,0,0,0.12);
+          border: 3px solid ${C.classified};
+          border-radius: 2px;
         }
         .sl-tab {
           background-color: ${C.manilaDeep};
@@ -1982,9 +2032,11 @@ export default function StatLine() {
         }
         .sl-tab-btn:hover { opacity: 0.85; }
         .sl-tab-btn.active {
-          background-color: ${C.manilaDeep};
+          background-color: ${C.classified};
+          color: ${C.manila};
           opacity: 1;
           font-weight: 700;
+          border-color: ${C.classified};
           box-shadow: 0 -2px 4px rgba(0,0,0,0.06);
         }
         .sl-tab-btn:focus { outline: 2px dashed ${C.ink}; outline-offset: -4px; }
@@ -1994,11 +2046,11 @@ export default function StatLine() {
           font-family: 'Anton', sans-serif; letter-spacing: 0.18em;
           transform: rotate(-4deg); opacity: 0.88;
           box-shadow: inset 0 0 0 1px ${C.classified};
-          background: rgba(155,28,28,0.05);
+          background: ${rgba(C.classified, 0.05)};
         }
         .sl-stamp-stamped {
           border-color: ${C.green}; color: ${C.green};
-          background: rgba(26,77,46,0.05);
+          background: ${rgba(C.green, 0.08)};
           box-shadow: inset 0 0 0 1px ${C.green}; transform: rotate(3deg);
         }
         .sl-stamp-failed {
@@ -2014,8 +2066,9 @@ export default function StatLine() {
         .sl-stat-row:nth-child(even) { background-color: rgba(0,0,0,0.025); }
         .sl-stat-row:hover { background-color: ${C.highlight}; }
         .sl-divider {
-          height: 1px;
-          background-image: linear-gradient(to right, transparent 0%, rgba(0,0,0,0.4) 20%, rgba(0,0,0,0.4) 80%, transparent 100%);
+          height: 2px;
+          background-image: linear-gradient(to right, transparent 0%, ${C.classified} 15%, ${C.classified} 85%, transparent 100%);
+          opacity: 0.7;
         }
         .sl-input {
           background: rgba(255,255,255,0.55);
@@ -2059,7 +2112,43 @@ export default function StatLine() {
         }
         .sl-attempt-dot.used { background: ${C.classified}; border-color: ${C.classified}; }
         .sl-attempt-dot.correct { background: ${C.green}; border-color: ${C.green}; }
+        @keyframes sl-bull-burst {
+          0%   { transform: translate(0, 0) scale(0.3) rotate(0deg); opacity: 0; }
+          15%  { opacity: 1; }
+          100% { transform: translate(var(--dx), var(--dy)) scale(1.1) rotate(var(--rot)); opacity: 0; }
+        }
+        .sl-bull-overlay {
+          position: fixed; inset: 0; pointer-events: none; z-index: 100;
+          display: flex; align-items: center; justify-content: center;
+        }
+        .sl-bull-piece {
+          position: absolute;
+          font-size: 2.6rem;
+          animation: sl-bull-burst 2.4s ease-out forwards;
+          filter: drop-shadow(0 2px 4px rgba(0,0,0,0.25));
+        }
       `}</style>
+
+      {showBullBurst && (
+        <div className="sl-bull-overlay" aria-hidden="true">
+          {Array.from({ length: 24 }).map((_, i) => {
+            const angle = (Math.PI * 2 * i) / 24 + (Math.random() - 0.5) * 0.3;
+            const dist = 280 + Math.random() * 240;
+            return (
+              <span
+                key={i}
+                className="sl-bull-piece"
+                style={{
+                  '--dx': `${Math.cos(angle) * dist}px`,
+                  '--dy': `${Math.sin(angle) * dist}px`,
+                  '--rot': `${(Math.random() - 0.5) * 720}deg`,
+                  animationDelay: `${Math.random() * 0.18}s`
+                }}
+              >🐂</span>
+            );
+          })}
+        </div>
+      )}
 
       <div className="sl-paper min-h-screen w-full py-8 px-3 sm:px-6 sl-typewriter" style={{ color: C.ink }}>
         <div className="max-w-5xl mx-auto">
@@ -2133,7 +2222,7 @@ export default function StatLine() {
 
             <div>
               <div className="flex items-center justify-between mb-2 flex-wrap gap-2">
-                <div className="sl-headline text-sm tracking-widest" style={{ opacity: 0.7 }}>
+                <div className="sl-headline text-sm tracking-widest" style={{ color: C.classified, fontWeight: 700 }}>
                   ▼ PERFORMANCE LOG · CAREER REGULAR SEASON
                 </div>
                 {state === 'playing' && (
@@ -2143,7 +2232,7 @@ export default function StatLine() {
               <div className="overflow-x-auto" style={{ border: `1px solid ${C.manilaDeep}` }}>
                 <table className="w-full sl-mono text-xs sm:text-sm" style={{ borderCollapse: 'collapse' }}>
                   <thead>
-                    <tr style={{ background: C.ink, color: C.manila }}>
+                    <tr style={{ background: C.classified, color: C.manila }}>
                       {visibleCols.map(c => (
                         <th key={c.key} className="px-2 py-2 sl-headline tracking-widest font-semibold"
                             style={{ textAlign: c.align, fontSize: '0.78rem' }}>{c.label}</th>
@@ -2174,7 +2263,7 @@ export default function StatLine() {
                 <div className="sl-divider my-6" />
 
                 <div>
-                  <div className="sl-headline text-sm tracking-widest mb-3" style={{ opacity: 0.7 }}>
+                  <div className="sl-headline text-sm tracking-widest mb-3" style={{ color: C.classified, fontWeight: 700 }}>
                     ▼ INTELLIGENCE BRIEFING
                   </div>
                   <div className="space-y-3">
@@ -2206,7 +2295,7 @@ export default function StatLine() {
             <div className="sl-divider my-6" />
 
             <div>
-              <div className="sl-headline text-sm tracking-widest mb-3" style={{ opacity: 0.7 }}>
+              <div className="sl-headline text-sm tracking-widest mb-3" style={{ color: C.classified, fontWeight: 700 }}>
                 ▼ IDENTIFY SUBJECT
               </div>
               {!isOver && (
@@ -2311,7 +2400,7 @@ export default function StatLine() {
                   </div>
                   {guesses.map((g, i) => (
                     <div key={i} className="flex items-center gap-3 px-3 py-1.5"
-                         style={{ background: g.correct ? 'rgba(26,77,46,0.08)' : 'rgba(155,28,28,0.06)',
+                         style={{ background: g.correct ? rgba(C.green, 0.10) : rgba(C.classified, 0.06),
                                   borderLeft: `3px solid ${g.correct ? C.green : C.classified}` }}>
                       <span style={{ opacity: 0.6 }}>›</span>
                       <span className="flex-1">"{g.text}"</span>
@@ -2326,7 +2415,7 @@ export default function StatLine() {
 
               {isOver && (
                 <div className="mt-6 p-5 rounded-sm" style={{
-                  background: state === 'won' ? 'rgba(26,77,46,0.08)' : 'rgba(155,28,28,0.06)',
+                  background: state === 'won' ? rgba(C.green, 0.10) : rgba(C.classified, 0.06),
                   border: `2px solid ${state === 'won' ? C.green : C.classified}`
                 }}>
                   <div className="sl-display text-2xl mb-1" style={{ color: state === 'won' ? C.green : C.classified }}>
