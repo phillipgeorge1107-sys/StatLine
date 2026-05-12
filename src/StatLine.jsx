@@ -1863,9 +1863,9 @@ const BULLS_C = {
   manilaDeep: '#ddd1b3', highlight: '#ffe8e3', green: '#b8862a'
 };
 const SPURS_C = {
-  // Late 90s Spurs "Fiesta": black + teal + cream + hot pink
+  // Late 90s Spurs accents: black + teal + cream + success green
   ink: '#0a0a0a', classified: '#008C95', manila: '#f0e8d6',
-  manilaDeep: '#ddd1b3', highlight: '#ffe5f1', green: '#E50087'
+  manilaDeep: '#ddd1b3', highlight: '#e8f5ec', green: '#1a7a3a'
 };
 
 export default function StatLine() {
@@ -2253,44 +2253,7 @@ export default function StatLine() {
                   </tbody>
                 </table>
               </div>
-              <div className="text-xs mt-1 italic" style={{ opacity: 0.55 }}>
-                * Stats compiled from memory. Spot-check before relying on rate stats.
-              </div>
             </div>
-
-            {mode !== 'bulls' && (
-              <>
-                <div className="sl-divider my-6" />
-
-                <div>
-                  <div className="sl-headline text-sm tracking-widest mb-3" style={{ color: C.classified, fontWeight: 700 }}>
-                    ▼ INTELLIGENCE BRIEFING
-                  </div>
-                  <div className="space-y-3">
-                    {player.clues.map((clue, i) => {
-                      const unlocked = i < revealed || isOver;
-                      return (
-                        <div key={i} className={`sl-clue-box rounded-sm px-4 py-3 flex items-start gap-3 ${unlocked ? 'sl-clue-revealed' : ''}`}>
-                          <div className="mt-0.5" style={{ flexShrink: 0 }}>
-                            {unlocked ? <Unlock size={16} /> : <Lock size={16} style={{ opacity: 0.5 }} />}
-                          </div>
-                          <div className="flex-1 text-sm sm:text-base">
-                            <span className="sl-headline tracking-widest mr-2" style={{ opacity: 0.6, fontSize: '0.75rem' }}>
-                              INTEL {String(i + 1).padStart(2, '0')}
-                            </span>
-                            {unlocked
-                              ? <span>{clue}</span>
-                              : <span className="sl-redact" style={{ fontSize: '0.85em', padding: '2px 6px' }}>
-                                  {'█'.repeat(Math.min(40, clue.length))}
-                                </span>}
-                          </div>
-                        </div>
-                      );
-                    })}
-                  </div>
-                </div>
-              </>
-            )}
 
             <div className="sl-divider my-6" />
 
@@ -2423,8 +2386,8 @@ export default function StatLine() {
                   </div>
                   <div className="text-base mb-3">
                     The subject was <strong className="sl-display tracking-wider">{player.name.toUpperCase()}</strong>
-                    {state === 'won' && guesses.length === 1 && ' — first try, no clues used.'}
-                    {state === 'won' && guesses.length === 2 && ' — solved with 1 clue.'}
+                    {state === 'won' && guesses.length === 1 && ' — nailed it on the first try.'}
+                    {state === 'won' && guesses.length === 2 && ' — got it on the second try.'}
                     {state === 'won' && guesses.length === 3 && ' — solved on the final attempt.'}
                   </div>
 
