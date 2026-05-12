@@ -2364,7 +2364,7 @@ export default function StatLine() {
                   </div>
                 </div>
               )}
-            </div>
+            </div>dfdfd
           </div>
 
           <div className="text-center text-xs mt-8 italic" style={{ opacity: 0.4 }}>
