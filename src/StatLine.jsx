@@ -1824,6 +1824,15 @@ function getDailyPlayer(mode) {
   const roster = ROSTERS[mode];
   return roster[hashString(SEED_PREFIX[mode] + getDailySeed()) % roster.length];
 }
+// Get the player for any past puzzle number (mode-specific).
+// Used by the archive — reproduces the daily seed for the date that day N corresponds to.
+function getPlayerForDay(mode, dayNum) {
+  const epoch = new Date(STATLINE_EPOCH + 'T00:00:00');
+  const target = new Date(epoch.getTime() + (dayNum - 1) * 86400000);
+  const seed = `${target.getFullYear()}-${String(target.getMonth()+1).padStart(2,'0')}-${String(target.getDate()).padStart(2,'0')}`;
+  const roster = ROSTERS[mode];
+  return roster[hashString(SEED_PREFIX[mode] + seed) % roster.length];
+}
 
 // ── Day number from launch epoch ─────────────────────────
 const STATLINE_EPOCH = '2026-05-12';
@@ -1834,13 +1843,14 @@ function getDayNumber() {
 }
 
 // ── Share helpers (Wordle-style emoji grid) ──────────────
-function buildShareString({ mode, guesses, won, dayNum }) {
+function buildShareString({ mode, isArchive, guesses, won, dayNum }) {
   const modeTag = mode === 'bulls' ? ' (Bulls) 🐂' : '';
+  const archivePrefix = isArchive ? 'Archive ' : '';
   const used = guesses.length;
   const score = won ? `${used}/${MAX_GUESSES}` : `X/${MAX_GUESSES}`;
   const squares = guesses.map(g => g.correct ? '🟩' : '🟥').join('');
   const padding = '⬛'.repeat(Math.max(0, MAX_GUESSES - used));
-  return `STATLINE #${dayNum}${modeTag} — ${score}\n${squares}${padding}`;
+  return `STATLINE ${archivePrefix}#${dayNum}${modeTag} — ${score}\n${squares}${padding}`;
 }
 async function shareOrCopy(text) {
   if (typeof navigator === 'undefined') return 'failed';
@@ -1893,10 +1903,23 @@ export default function StatLine() {
     };
     return { all: loadMode('all'), bulls: loadMode('bulls') };
   });
-  const updateCurrent = (updates) =>
-    setGames(g => ({ ...g, [mode]: { ...g[mode], ...updates } }));
 
-  // Persist progress on every change so closing the tab mid-guess is safe.
+  // Archive view state. `archiveView` is one of:
+  //   null     → playing today's daily (default)
+  //   'list'   → browsing the archive list
+  //   number N → playing past puzzle #N
+  const [archiveView, setArchiveView] = useState(null);
+  // Archive progress: { all: { 3: { guesses, revealed, state, bestScore }, ... }, bulls: { ... } }
+  const [archiveProgress, setArchiveProgress] = useState(() => {
+    if (typeof window === 'undefined') return { all: {}, bulls: {} };
+    try {
+      const saved = JSON.parse(localStorage.getItem('statline:archive') || 'null');
+      if (saved && saved.all && saved.bulls) return saved;
+    } catch { /* ignore */ }
+    return { all: {}, bulls: {} };
+  });
+
+  // Persist daily progress on every change.
   useEffect(() => {
     if (typeof window === 'undefined') return;
     const today = getDailySeed();
@@ -1912,23 +1935,75 @@ export default function StatLine() {
     } catch { /* private mode / quota — fail silently */ }
   }, [games]);
 
-  // Pull active mode's puzzle into the names the rest of the JSX expects.
-  const { player, guesses, revealed, state } = games[mode];
+  // Persist archive progress separately.
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    try {
+      localStorage.setItem('statline:archive', JSON.stringify(archiveProgress));
+    } catch { /* ignore */ }
+  }, [archiveProgress]);
 
-  // Transient UI state — reset when switching tabs.
+  // Whether we're currently playing a past puzzle (vs. today's daily or the list).
+  const isArchive = typeof archiveView === 'number';
+  const currentDayNum = isArchive ? archiveView : getDayNumber();
+
+  // The puzzle currently being displayed. Either today's daily for current mode,
+  // or a specific past puzzle resolved via getPlayerForDay.
+  // Same shape both ways: { player, guesses, revealed, state, bestScore? }.
+  const archiveEntry = isArchive
+    ? (archiveProgress[mode][archiveView] || { guesses: [], revealed: 0, state: 'playing', bestScore: null })
+    : null;
+  const player = isArchive ? getPlayerForDay(mode, archiveView) : games[mode].player;
+  const guesses = isArchive ? archiveEntry.guesses : games[mode].guesses;
+  const revealed = isArchive ? archiveEntry.revealed : games[mode].revealed;
+  const state = isArchive ? archiveEntry.state : games[mode].state;
+  const bestScore = isArchive ? archiveEntry.bestScore : null;
+
+  // Update current puzzle's state — routes to the right store based on view.
+  const updateCurrent = (updates) => {
+    if (isArchive) {
+      setArchiveProgress(prev => {
+        const prevEntry = prev[mode][archiveView] || { guesses: [], revealed: 0, state: 'playing', bestScore: null };
+        return {
+          ...prev,
+          [mode]: { ...prev[mode], [archiveView]: { ...prevEntry, ...updates } }
+        };
+      });
+    } else {
+      setGames(g => ({ ...g, [mode]: { ...g[mode], ...updates } }));
+    }
+  };
+
+  // Transient UI state — reset when switching tabs or entering/leaving archive.
   const [input, setInput] = useState('');
   const [shareToast, setShareToast] = useState('');
   const [showSuggestions, setShowSuggestions] = useState(false);
   const [highlightedIdx, setHighlightedIdx] = useState(-1);
   const [showBullBurst, setShowBullBurst] = useState(false);
 
-  const switchMode = (m) => {
-    if (m === mode) return;
-    setMode(m);
+  // Reset transient UI bits when switching views.
+  const resetTransient = () => {
     setInput('');
     setShowSuggestions(false);
     setHighlightedIdx(-1);
     setShareToast('');
+  };
+
+  const switchMode = (m) => {
+    if (m === mode) return;
+    setMode(m);
+    setArchiveView(null); // exit archive when switching tabs
+    resetTransient();
+  };
+
+  // Archive navigation helpers.
+  const openArchiveList = () => { setArchiveView('list'); resetTransient(); };
+  const closeArchive   = () => { setArchiveView(null); resetTransient(); };
+  const playArchive    = (n) => { setArchiveView(n); resetTransient(); };
+  const replayArchive  = () => {
+    // Reset guesses/state but preserve bestScore for the current archive puzzle.
+    updateCurrent({ guesses: [], revealed: 0, state: 'playing' });
+    resetTransient();
   };
 
   // Active theme palette + helper that turns hex+alpha into rgba(...)
@@ -1943,7 +2018,15 @@ export default function StatLine() {
     const text = input.trim();
     if (!text) return;
     if (matchesPlayer(text, player)) {
-      updateCurrent({ guesses: [...guesses, { text, correct: true }], state: 'won' });
+      const won = { guesses: [...guesses, { text, correct: true }], state: 'won' };
+      // If playing archive, also update bestScore (lower = better; preserve previous best if better).
+      if (isArchive) {
+        const newScore = `${won.guesses.length}/${MAX_GUESSES}`;
+        const prevBest = bestScore;
+        const prevBestNum = prevBest ? parseInt(prevBest, 10) : Infinity;
+        won.bestScore = won.guesses.length < prevBestNum ? newScore : (prevBest || newScore);
+      }
+      updateCurrent(won);
       if (mode === 'bulls') {
         setShowBullBurst(true);
         setTimeout(() => setShowBullBurst(false), 2600);
@@ -1961,7 +2044,7 @@ export default function StatLine() {
 
   const onShare = async () => {
     const text = buildShareString({
-      mode, guesses, won: state === 'won', dayNum: getDayNumber()
+      mode, isArchive, guesses, won: state === 'won', dayNum: currentDayNum
     });
     const result = await shareOrCopy(text);
     setShareToast(
@@ -1991,6 +2074,63 @@ export default function StatLine() {
     }
     return [...exact, ...prefix, ...contains].slice(0, 6);
   })();
+
+  // Render the archive list: every past puzzle for the current mode (today excluded).
+  // Most recent first. Each row shows status (✓ solved with score, ✗ failed, or unplayed).
+  const renderArchiveList = () => {
+    const totalDays = getDayNumber();
+    const pastDays = [];
+    for (let n = totalDays - 1; n >= 1; n--) pastDays.push(n);
+    return (
+      <div>
+        <div className="mb-5 mt-2">
+          <div className="text-xs uppercase tracking-widest mb-1" style={{ opacity: 0.55 }}>Past Dossiers</div>
+          <div className="sl-display text-3xl sm:text-4xl" style={{ letterSpacing: '0.04em' }}>
+            {MODE_LABELS[mode]} ARCHIVE
+          </div>
+        </div>
+        <div className="sl-divider my-5" />
+        {pastDays.length === 0 ? (
+          <div className="text-center py-8 italic" style={{ opacity: 0.6 }}>
+            No past dossiers yet. Come back tomorrow.
+          </div>
+        ) : (
+          <div className="space-y-2 max-h-96 overflow-y-auto pr-1">
+            {pastDays.map(n => {
+              const entry = archiveProgress[mode][n];
+              const status = entry ? entry.state : 'unplayed';
+              const best = entry ? entry.bestScore : null;
+              const pastPlayer = getPlayerForDay(mode, n);
+              const reveal = status === 'won' || status === 'lost';
+              return (
+                <button
+                  key={n}
+                  onClick={() => playArchive(n)}
+                  className="sl-archive-row sl-mono"
+                >
+                  <span className="sl-headline tracking-widest" style={{ minWidth: '3.5em', textAlign: 'left' }}>
+                    #{n}
+                  </span>
+                  <span className="flex-1 text-left px-3" style={{ fontSize: '0.95rem' }}>
+                    {reveal ? pastPlayer.name : <span style={{ opacity: 0.4 }}>— — — — —</span>}
+                  </span>
+                  <span className="sl-headline text-xs tracking-widest" style={{
+                    color: status === 'won' ? C.green : status === 'lost' ? C.classified : C.ink,
+                    opacity: status === 'unplayed' ? 0.5 : 1
+                  }}>
+                    {status === 'won' && `✓ ${best || ''}`}
+                    {status === 'lost' && `✗ X/${MAX_GUESSES}`}
+                    {status === 'playing' && '… IN PROGRESS'}
+                    {status === 'unplayed' && '▶ PLAY'}
+                  </span>
+                </button>
+              );
+            })}
+          </div>
+        )}
+      </div>
+    );
+  };
 
   return (
     <>
@@ -2044,6 +2184,26 @@ export default function StatLine() {
           box-shadow: 0 -2px 4px rgba(0,0,0,0.06);
         }
         .sl-tab-btn:focus { outline: 2px dashed ${C.ink}; outline-offset: -4px; }
+        .sl-archive-nav {
+          background: transparent; border: none; cursor: pointer;
+          color: ${C.classified}; font-weight: 700;
+          padding: 4px 8px; opacity: 0.85;
+          transition: opacity 0.15s;
+        }
+        .sl-archive-nav:hover { opacity: 1; text-decoration: underline; }
+        .sl-archive-row {
+          display: flex; align-items: center; width: 100%;
+          padding: 10px 14px;
+          background: rgba(255,255,255,0.4);
+          border: 1px dashed ${rgba(C.ink, 0.25)};
+          cursor: pointer;
+          transition: background 0.1s, border-color 0.1s;
+          color: ${C.ink};
+        }
+        .sl-archive-row:hover {
+          background: ${C.highlight};
+          border-color: ${C.classified};
+        }
         .sl-stamp {
           display: inline-block; border: 3px solid ${C.classified};
           color: ${C.classified}; padding: 4px 14px;
@@ -2169,7 +2329,7 @@ export default function StatLine() {
             </div>
             <div className="text-right">
               <div className="sl-display text-2xl sm:text-3xl">
-                #{getDayNumber()}
+                #{currentDayNum}
               </div>
             </div>
           </div>
@@ -2180,24 +2340,45 @@ export default function StatLine() {
             </div>
           </div>
 
-          <div className="ml-6 inline-flex">
-            <button
-              onClick={() => switchMode('all')}
-              className={`sl-tab-btn sl-headline ${mode === 'all' ? 'active' : ''}`}
-              aria-pressed={mode === 'all'}
-            >
-              ALL-TIME
-            </button>
-            <button
-              onClick={() => switchMode('bulls')}
-              className={`sl-tab-btn sl-headline ${mode === 'bulls' ? 'active' : ''}`}
-              aria-pressed={mode === 'bulls'}
-            >
-              BULLS
-            </button>
+          <div className="flex items-end justify-between ml-6 mr-2">
+            <div className="inline-flex">
+              <button
+                onClick={() => switchMode('all')}
+                className={`sl-tab-btn sl-headline ${mode === 'all' ? 'active' : ''}`}
+                aria-pressed={mode === 'all'}
+              >
+                ALL-TIME
+              </button>
+              <button
+                onClick={() => switchMode('bulls')}
+                className={`sl-tab-btn sl-headline ${mode === 'bulls' ? 'active' : ''}`}
+                aria-pressed={mode === 'bulls'}
+              >
+                BULLS
+              </button>
+            </div>
+            <div className="sl-headline text-sm tracking-widest">
+              {archiveView === null && (
+                <button onClick={openArchiveList} className="sl-archive-nav">
+                  VIEW ARCHIVE ›
+                </button>
+              )}
+              {archiveView === 'list' && (
+                <button onClick={closeArchive} className="sl-archive-nav">
+                  ‹ BACK TO TODAY
+                </button>
+              )}
+              {typeof archiveView === 'number' && (
+                <button onClick={() => setArchiveView('list')} className="sl-archive-nav">
+                  ‹ BACK TO ARCHIVE
+                </button>
+              )}
+            </div>
           </div>
 
           <div className="sl-folder rounded-sm p-5 sm:p-8 relative">
+            {archiveView === 'list' ? renderArchiveList() : (
+              <>
             <div className="absolute top-4 right-4 sm:top-6 sm:right-8 flex flex-col gap-3 items-end">
               {state === 'won' && <div className="sl-stamp sl-stamp-stamped text-xl sm:text-2xl">CASE CLOSED</div>}
               {state === 'lost' && <div className="sl-stamp sl-stamp-failed text-xl sm:text-2xl">UNSOLVED</div>}
@@ -2400,7 +2581,7 @@ export default function StatLine() {
 
                   <div className="mb-4">
                     <div className="sl-headline text-xs tracking-widest mb-1" style={{ opacity: 0.6 }}>
-                      #{getDayNumber()}{mode === 'bulls' ? ' (BULLS)' : ''} · RESULT: {state === 'won' ? `${guesses.length}/${MAX_GUESSES}` : `X/${MAX_GUESSES}`}
+                      #{currentDayNum}{mode === 'bulls' ? ' (BULLS)' : ''} · RESULT: {state === 'won' ? `${guesses.length}/${MAX_GUESSES}` : `X/${MAX_GUESSES}`}
                     </div>
                     <div className="text-2xl" style={{ letterSpacing: '0.1em' }}>
                       {guesses.map(g => g.correct ? '🟩' : '🟥').join('')}
@@ -2412,9 +2593,20 @@ export default function StatLine() {
                     <button onClick={onShare} className="sl-btn-primary px-6 py-3 text-base flex items-center gap-2">
                       <Share2 size={16} /> SHARE RESULT
                     </button>
-                    <span className="text-sm italic flex items-center gap-2" style={{ opacity: 0.7 }}>
-                      <Calendar size={14} /> Come back tomorrow for a new dossier.
-                    </span>
+                    {isArchive ? (
+                      <button onClick={replayArchive} className="sl-btn-primary px-6 py-3 text-base flex items-center gap-2">
+                        ↻ PLAY AGAIN
+                      </button>
+                    ) : (
+                      <span className="text-sm italic flex items-center gap-2" style={{ opacity: 0.7 }}>
+                        <Calendar size={14} /> Come back tomorrow for a new dossier.
+                      </span>
+                    )}
+                    {isArchive && bestScore && state === 'won' && (
+                      <span className="sl-headline text-xs tracking-widest" style={{ opacity: 0.6 }}>
+                        BEST: {bestScore}
+                      </span>
+                    )}
                     {shareToast && (
                       <span className="sl-headline text-xs tracking-widest" style={{ color: C.green }}>
                         ✓ {shareToast}
@@ -2424,6 +2616,8 @@ export default function StatLine() {
                 </div>
               )}
             </div>
+              </>
+            )}
           </div>
 
           <div className="text-center text-xs mt-8 italic" style={{ opacity: 0.4 }}>
